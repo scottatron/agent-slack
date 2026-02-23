@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 // @ts-ignore — import attributes need module:"esnext" in tsconfig; Bun handles this fine
 import _editorHtmlContent from "./draft-editor.html" with { type: "text" };
 
@@ -17,10 +18,11 @@ export type DraftResult = { sent: true; text: string } | { cancelled: true };
 export function openDraftEditor(config: DraftEditorConfig): Promise<DraftResult> {
   return new Promise<DraftResult>((resolve, reject) => {
     let settled = false;
+    const sessionToken = randomUUID();
 
     const server: Server = createServer(async (req, res) => {
       if (req.method === "GET" && (req.url === "/" || req.url === "/index.html")) {
-        const html = buildEditorHtml(config);
+        const html = buildEditorHtml(config, sessionToken);
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(html);
         return;
@@ -28,6 +30,12 @@ export function openDraftEditor(config: DraftEditorConfig): Promise<DraftResult>
 
       if (req.method === "POST" && req.url === "/send") {
         try {
+          if (!hasValidSessionToken(req, sessionToken)) {
+            res.writeHead(403, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: false, error: "invalid session token" }));
+            return;
+          }
+
           const body = await readBody(req);
           const data = JSON.parse(body) as { text: string };
           if (typeof data.text !== "string" || !data.text.trim()) {
@@ -35,6 +43,7 @@ export function openDraftEditor(config: DraftEditorConfig): Promise<DraftResult>
             res.end(JSON.stringify({ ok: false, error: "text is required" }));
             return;
           }
+
           const sendResult = await config.onSend(data.text);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true, ts: sendResult.ts }));
@@ -53,6 +62,12 @@ export function openDraftEditor(config: DraftEditorConfig): Promise<DraftResult>
       }
 
       if (req.method === "POST" && req.url === "/cancel") {
+        if (!hasValidSessionToken(req, sessionToken)) {
+          res.writeHead(403, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "invalid session token" }));
+          return;
+        }
+
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true }));
         settled = true;
@@ -100,6 +115,17 @@ export function openDraftEditor(config: DraftEditorConfig): Promise<DraftResult>
 
 const MAX_BODY_BYTES = 1024 * 1024; // 1 MB
 
+function hasValidSessionToken(req: IncomingMessage, token: string): boolean {
+  const header = req.headers["x-draft-token"];
+  if (!header) {
+    return false;
+  }
+  if (Array.isArray(header)) {
+    return header.includes(token);
+  }
+  return header === token;
+}
+
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -137,10 +163,10 @@ function extractWorkspaceName(url?: string): string | null {
     return null;
   }
   try {
-    const host = new URL(url).hostname; // e.g. "stablygroup.slack.com"
+    const host = new URL(url).hostname;
     const parts = host.split(".");
     if (parts.length >= 3 && parts.at(-2) === "slack") {
-      return parts.slice(0, -2).join("."); // e.g. "stablygroup"
+      return parts.slice(0, -2).join(".");
     }
     return host;
   } catch {
@@ -148,7 +174,7 @@ function extractWorkspaceName(url?: string): string | null {
   }
 }
 
-function buildEditorHtml(config: DraftEditorConfig): string {
+function buildEditorHtml(config: DraftEditorConfig, sessionToken: string): string {
   const threadUrl = buildSlackThreadUrl(config);
   const workspaceName = extractWorkspaceName(config.workspaceUrl);
   const injectedConfig = JSON.stringify({
@@ -159,10 +185,9 @@ function buildEditorHtml(config: DraftEditorConfig): string {
     threadTs: config.threadTs || null,
     threadUrl,
     initialText: config.initialText || "",
+    sessionToken,
   });
 
-  // JSON.stringify handles quotes/backslashes; escape < and > to prevent
-  // </script> breakout and other HTML injection in <script> context.
   const safeConfig = injectedConfig.replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
   return getEditorHtml().replace("__DRAFT_CONFIG__", safeConfig);
 }
