@@ -12,6 +12,9 @@ function createContext(calls: { method: string; params: Record<string, unknown> 
       if (method === "files.getUploadURLExternal") {
         return { ok: true, upload_url: "https://upload.example/file", file_id: "F123" };
       }
+      if (method === "chat.postMessage") {
+        return { ok: true, channel: String(params.channel), ts: "1770165109.628379" };
+      }
       return { ok: true };
     },
   };
@@ -26,6 +29,7 @@ function createContext(calls: { method: string; params: Record<string, unknown> 
     getClientForWorkspace: async () => ({
       client: client as never,
       auth: { auth_type: "standard", token: "x" as const },
+      workspace_url: "https://workspace.slack.com",
     }),
     normalizeUrl: (u: string) => u,
     errorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err)),
@@ -57,7 +61,38 @@ describe("sendMessage", () => {
     const calls: { method: string; params: Record<string, unknown> }[] = [];
     const ctx = createContext(calls);
 
-    await sendMessage({
+    const result = await sendMessage({
+      ctx,
+      targetInput: "C12345678",
+      text: "hello",
+      options: { workspace: "https://workspace.slack.com" },
+    });
+
+    expect(calls).toEqual([
+      {
+        method: "chat.postMessage",
+        params: {
+          channel: "C12345678",
+          text: "hello",
+          thread_ts: undefined,
+        },
+      },
+    ]);
+    expect(result).toEqual({
+      ok: true,
+      channel_id: "C12345678",
+      workspace_url: "https://workspace.slack.com",
+      ts: "1770165109.628379",
+      thread_ts: "1770165109.628379",
+      url: "https://workspace.slack.com/archives/C12345678/p1770165109628379",
+    });
+  });
+
+  test("returns a permalink when the workspace was resolved implicitly", async () => {
+    const calls: { method: string; params: Record<string, unknown> }[] = [];
+    const ctx = createContext(calls);
+
+    const result = await sendMessage({
       ctx,
       targetInput: "C12345678",
       text: "hello",
@@ -74,6 +109,14 @@ describe("sendMessage", () => {
         },
       },
     ]);
+    expect(result).toEqual({
+      ok: true,
+      channel_id: "C12345678",
+      workspace_url: "https://workspace.slack.com",
+      ts: "1770165109.628379",
+      thread_ts: "1770165109.628379",
+      url: "https://workspace.slack.com/archives/C12345678/p1770165109628379",
+    });
   });
 
   test("uploads attachment and uses message text as initial comment", async () => {
