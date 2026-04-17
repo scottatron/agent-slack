@@ -21,6 +21,15 @@ build() {
   bun build src/index.ts --compile --target="$target" --outfile="$outdir/$outfile" --define "AGENT_SLACK_BUILD_VERSION='$version'"
 }
 
+sign_macos_binary() {
+  file=$1
+  printf '%s\n' "Signing $file"
+  # Bun can emit a malformed signature blob for arm64 binaries. Strip any
+  # existing signature first so codesign can apply a valid ad-hoc signature.
+  codesign --remove-signature "$file" >/dev/null 2>&1 || true
+  codesign --sign - --force "$file"
+}
+
 build "bun-darwin-arm64" "agent-slack-darwin-arm64"
 build "bun-darwin-x64" "agent-slack-darwin-x64"
 
@@ -30,8 +39,7 @@ build "bun-darwin-x64" "agent-slack-darwin-x64"
 # `codesign --sign -` stamps a valid ad-hoc signature.
 if command -v codesign >/dev/null 2>&1; then
   for f in "$outdir"/agent-slack-darwin-*; do
-    printf '%s\n' "Signing $f"
-    codesign --sign - --force "$f"
+    sign_macos_binary "$f"
   done
 elif command -v rcodesign >/dev/null 2>&1; then
   for f in "$outdir"/agent-slack-darwin-*; do
@@ -67,4 +75,3 @@ build "bun-windows-x64" "agent-slack-windows-x64.exe"
 )
 
 printf '%s\n' "Done. Upload assets in $outdir/ to the GitHub release for $tag."
-
